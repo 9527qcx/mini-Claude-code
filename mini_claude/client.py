@@ -8,7 +8,7 @@ from openai import AsyncOpenAI
 
 
 
-async def ask_model(prompt: str) -> str:
+async def ask_model(messages) -> str:
     env_path = Path(__file__).resolve().parent.parent/".env"
     load_dotenv(env_path, encoding="utf-8")
 
@@ -24,9 +24,7 @@ async def ask_model(prompt: str) -> str:
     ) as client:
         response = await client.chat.completions.create(
             model=os.environ["OPENAI_MODEL"],
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            messages=messages,
         )
 
     return response.choices[0].message.content or ""
