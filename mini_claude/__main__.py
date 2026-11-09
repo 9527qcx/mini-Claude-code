@@ -1,5 +1,6 @@
 import argparse
-
+import asyncio
+from .client import ask_model
 
 def main():
     parser = argparse.ArgumentParser(
@@ -9,6 +10,8 @@ def main():
     args = parser.parse_args()
 
     print(f"收到你的请求：{args.prompt}")
+    ans = asyncio.run(ask_model(args.prompt))
+    print(ans)
 
 
 if __name__ == "__main__":
