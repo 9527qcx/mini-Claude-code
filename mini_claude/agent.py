@@ -1,13 +1,15 @@
 from .client import ask_model
 from .tools import execute_tool
+from .permissions import check_permission
 import json
 
 class Agent:
-    def __init__(self, max_turns: int = 10):
+    def __init__(self, max_turns: int = 10, permission_mode: str ="default"):
         if max_turns < 1:
             raise ValueError("max_turns 必须大于 0")
         self.messages = []
         self.max_turns = max_turns
+        self.permission_mode = permission_mode
 
     async def chat(self, msg: str) -> str:
         user_message = {"role": "user", "content": msg}
@@ -38,7 +40,31 @@ class Agent:
                         "content": "工具参数不是合法 JSON，请修正参数",
                     }
                 else:
-                    result = execute_tool(name, arguments)
+                    permission = check_permission(name, self.permission_mode)
+                    action = permission.get("action")
+                    if action=="allow":
+                        result = execute_tool(name, arguments)
+                    elif action=="confirm":
+                        print(permission["message"])
+                        print(f"工具：{name}")
+                        print(json.dumps(arguments, ensure_ascii=False, indent=2))
+                        try:
+                            confirmed = input("允许执行？[Y/N] ").strip().lower() == "y"
+                        except (EOFError, KeyboardInterrupt):
+                            print()
+                            confirmed = False
+                        if confirmed:
+                            result = execute_tool(name, arguments)
+                        else:
+                            result = {
+                                "is_error": True,
+                                "content": "用户拒绝了此次操作",
+                            }
+                    else:
+                        result = {
+                            "is_error": True,
+                            "content": permission.get("message", "权限检查未通过"),
+                        }
 
                 status = "失败" if result["is_error"] else "成功"
                 print(f"[工具结果] {status}")
