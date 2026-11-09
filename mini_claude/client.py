@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+from .tools import TOOL_DEFINITIONS
 
 
 
@@ -25,6 +26,7 @@ async def ask_model(messages) -> str:
         response = await client.chat.completions.create(
             model=os.environ["OPENAI_MODEL"],
             messages=messages,
+            tools = TOOL_DEFINITIONS,
         )
 
-    return response.choices[0].message.content or ""
+    return response.choices[0].message
