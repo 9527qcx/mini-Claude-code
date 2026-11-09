@@ -3,13 +3,16 @@ import os
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from .tools import TOOL_DEFINITIONS
+from openai.types.chat import ChatCompletionMessage
+
+from .prompt import build_system_prompt
 
 
 
 
 
 
-async def ask_model(messages) -> str:
+async def ask_model(messages) -> ChatCompletionMessage:
     env_path = Path(__file__).resolve().parent.parent/".env"
     load_dotenv(env_path, encoding="utf-8")
 
@@ -25,7 +28,13 @@ async def ask_model(messages) -> str:
     ) as client:
         response = await client.chat.completions.create(
             model=os.environ["OPENAI_MODEL"],
-            messages=messages,
+            messages=[
+                {
+                    "role": "system",
+                    "content": build_system_prompt(),
+                },
+                *messages
+            ],
             tools = TOOL_DEFINITIONS,
         )
 
