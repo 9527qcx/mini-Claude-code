@@ -10,6 +10,7 @@ class Agent:
         self.messages = []
         self.max_turns = max_turns
         self.permission_mode = permission_mode
+        self.read_state: dict[str, int] = {}
 
     async def chat(self, msg: str) -> str:
         user_message = {"role": "user", "content": msg}
@@ -43,7 +44,7 @@ class Agent:
                     permission = check_permission(name, self.permission_mode)
                     action = permission.get("action")
                     if action=="allow":
-                        result = execute_tool(name, arguments)
+                        result = execute_tool(name, arguments, read_state=self.read_state)
                     elif action=="confirm":
                         print(permission["message"])
                         print(f"工具：{name}")
@@ -54,7 +55,7 @@ class Agent:
                             print()
                             confirmed = False
                         if confirmed:
-                            result = execute_tool(name, arguments)
+                            result = execute_tool(name, arguments, read_state=self.read_state)
                         else:
                             result = {
                                 "is_error": True,
@@ -91,3 +92,4 @@ class Agent:
 
     def clear_history(self):
         self.messages.clear()
+        self.read_state.clear()

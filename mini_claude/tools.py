@@ -1,6 +1,6 @@
 from pathlib import Path
 
-TOOLS_NAME = ["read_file", "list_files", "write_file"]
+TOOLS_NAME = ["read_file", "list_files", "write_file", "edit_file"]
 
 TOOL_DEFINITIONS = [
     {
@@ -61,10 +61,52 @@ TOOL_DEFINITIONS = [
           },
       },
     },
+    {
+    "type": "function",
+    "function": {
+        "name": "edit_file",
+        "description": (
+            "精确替换文件中的一处文本。必须先 read_file；"
+            "old_string 必须非空且唯一匹配；文件变化后需要重新读取"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "old_string": {
+                    "type": "string",
+                    "description": "需要替换的精确旧文本",
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "替换后的文本，空字符串表示删除",
+                },
+            },
+            "required": ["file_path", "old_string", "new_string"],
+            "additionalProperties": False,
+        },
+      },
+    },
 ]
 
-def _read_file(file_path: str) -> str:
-    return Path(file_path).read_text(encoding="utf-8")
+def _read_file(file_path: str, read_state: dict[str, int] | None = None) -> str:
+    path = Path(file_path).resolve()
+    key = str(path)
+
+    if read_state is not None:
+        read_state.pop(key, None)
+
+    before = path.stat().st_mtime_ns
+    content = path.read_bytes().decode("utf-8")
+    after = path.stat().st_mtime_ns
+
+    if before != after:
+        raise ValueError("读取期间文件发生变化，请重新读取")
+
+    if read_state is not None:
+        read_state[key] = after
+
+    return content
 
 def _list_files(directory_path: str) -> str:
     entries = sorted(
@@ -94,7 +136,56 @@ def _write_file(file_path: str, content: str) -> str:
         file.write(content)
     return f"已创建文件：{relative_path}"
 
-def execute_tool(name: str, arguments: dict) -> dict:
+def _edit_file(
+    file_path: str,
+    old_string: str,
+    new_string: str,
+    read_state: dict[str, int] | None,
+) -> str:
+    workspace = Path.cwd().resolve()
+    target = Path(file_path).resolve()
+
+    if not target.is_relative_to(workspace):
+        raise ValueError("编辑路径必须位于当前工作目录范围内")
+
+    relative_path = target.relative_to(workspace)
+    if any(part.casefold() == ".git" for part in relative_path.parts):
+        raise ValueError("禁止编辑 .git 目录")
+
+    key = str(target)
+
+    if read_state is None or key not in read_state:
+        raise ValueError("编辑前必须先调用 read_file")
+
+    expected_mtime = read_state[key]
+
+    if target.stat().st_mtime_ns != expected_mtime:
+        read_state.pop(key, None)
+        raise ValueError("文件已被外部修改，请重新读取")
+
+    content = target.read_bytes().decode("utf-8")
+
+    position = content.find(old_string)
+    if position == -1:
+        raise ValueError("未找到 old_string，请检查或重新读取")
+
+    if content.find(old_string, position + 1) != -1:
+        raise ValueError("old_string 匹配多处，请提供更多上下文")
+
+    updated = content.replace(old_string, new_string, 1)
+
+    if target.stat().st_mtime_ns != expected_mtime:
+        read_state.pop(key, None)
+        raise ValueError("编辑准备期间文件发生变化，请重新读取")
+
+    read_state.pop(key, None)
+    target.write_bytes(updated.encode("utf-8"))
+
+    return f"已编辑文件：{relative_path}；再次编辑前请重新读取"
+
+def execute_tool(name: str, 
+                 arguments: dict, 
+                 read_state: dict[str, int] | None = None,) -> dict:
     if name not in TOOLS_NAME:
         return {
             "is_error": True,
@@ -119,16 +210,32 @@ def execute_tool(name: str, arguments: dict) -> dict:
 
     try:
         if name == "read_file":
-            content = _read_file(path)
+            content = _read_file(path, read_state)
         elif name == "list_files":
             content = _list_files(path)
-        else:
+        elif name == "write_file":
             text = arguments.get("content")
             if not isinstance(text, str):
                 raise ValueError("content 必须是字符串")
-
             content = _write_file(path, text)
+        elif name == "edit_file":
+            old_string = arguments.get("old_string")
+            new_string = arguments.get("new_string")
 
+            if not isinstance(old_string, str) or old_string == "":
+                raise ValueError("old_string 必须是非空字符串")
+
+            if not isinstance(new_string, str):
+                raise ValueError("new_string 必须是字符串")
+
+            content = _edit_file(
+                path,
+                old_string,
+                new_string,
+                read_state,
+            )
+        else:
+            raise ValueError(f"工具尚未接入执行器：{name}")
         return {
             "is_error": False,
             "content": content,
