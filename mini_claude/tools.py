@@ -1,6 +1,9 @@
 from pathlib import Path
+import subprocess
 
-TOOLS_NAME = ["read_file", "list_files", "write_file", "edit_file"]
+from .shell import run_shell
+
+TOOLS_NAME = ["read_file", "list_files", "write_file", "edit_file", "grep_search", "run_shell"]
 
 TOOL_DEFINITIONS = [
     {
@@ -87,6 +90,58 @@ TOOL_DEFINITIONS = [
         },
       },
     },
+    {
+    "type": "function",
+    "function": {
+        "name": "grep_search",
+        "description": (
+            "递归搜索目录中的 UTF-8 Python 文件，按字面文本匹配，"
+            "返回路径、行号和匹配行，最多返回 100 行"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "directory_path": {
+                    "type": "string",
+                    "description": "项目内的搜索目录",
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "要查找的非空文本，按字面匹配",
+                },
+            },
+            "required": ["directory_path", "pattern"],
+            "additionalProperties": False,
+        },
+    },
+},
+{
+    "type": "function",
+    "function": {
+        "name": "run_shell",
+        "description": (
+            "在当前工作目录执行前台 PowerShell 命令，"
+            "返回退出码与输出；执行前需要用户确认"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "完整的 PowerShell 命令",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "超时秒数，默认 30",
+                    "minimum": 1,
+                    "maximum": 120,
+                },
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+    },
+},
 ]
 
 def _read_file(file_path: str, read_state: dict[str, int] | None = None) -> str:
@@ -183,6 +238,62 @@ def _edit_file(
 
     return f"已编辑文件：{relative_path}；再次编辑前请重新读取"
 
+def _grep_search(directory_path: str, pattern: str) -> str:
+    workspace = Path.cwd().resolve()
+    root = Path(directory_path).resolve()
+
+    if not root.is_relative_to(workspace):
+        raise ValueError("搜索目录必须位于当前工作目录范围内")
+
+    if not root.is_dir():
+        raise ValueError("搜索路径不存在或不是目录")
+
+    skipped_dirs = {
+        ".git", ".venv", "venv", "__pycache__", "node_modules"
+    }
+    pending = [root]
+    visited = set()
+    matches = []
+
+    while pending:
+        directory = pending.pop()
+        resolved = directory.resolve()
+
+        if resolved in visited:
+            continue
+        visited.add(resolved)
+
+        for entry in sorted(directory.iterdir()):
+            if entry.is_symlink():
+                continue
+
+            if not entry.resolve().is_relative_to(root):
+                continue
+
+            if entry.is_dir():
+                if entry.name.casefold() not in skipped_dirs:
+                    pending.append(entry)
+                continue
+
+            if not entry.is_file() or entry.suffix.lower() != ".py":
+                continue
+
+            text = entry.read_text(encoding="utf-8")
+            relative_path = entry.relative_to(workspace).as_posix()
+
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if pattern in line:
+                    matches.append(
+                        f"{relative_path}:{line_number}:{line}"
+                    )
+
+                    if len(matches) >= 100:
+                        return "\n".join(matches) + (
+                            "\n已达到 100 行上限，可能还有更多匹配"
+                        )
+
+    return "\n".join(matches) or "未找到匹配"
+
 def execute_tool(name: str, 
                  arguments: dict, 
                  read_state: dict[str, int] | None = None,) -> dict:
@@ -197,9 +308,25 @@ def execute_tool(name: str,
             "is_error": True,
             "content": "工具参数必须是字典",
         }
+
+    if name == "run_shell":
+        try:
+            return run_shell(
+                arguments.get("command"),
+                arguments.get("timeout", 30),
+            )
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            return {
+                "is_error": True,
+                "content": f"Shell 执行失败：{error}",
+            }
+        finally:
+            if read_state is not None:
+                read_state.clear()#shell可能修改多个文件，所以调用后清空读取记录
     
     argument_name = (
-        "directory_path" if name == "list_files" else "file_path"
+        "directory_path" 
+        if name in {"list_files", "grep_search"} else "file_path"
     )
     path = arguments.get(argument_name)
     if not isinstance(path, str) or not path.strip():
@@ -234,6 +361,12 @@ def execute_tool(name: str,
                 new_string,
                 read_state,
             )
+        elif name == "grep_search":
+            pattern = arguments.get("pattern")
+
+            if not isinstance(pattern, str) or pattern == "":
+                raise ValueError("pattern 必须是非空字符串")
+            content = _grep_search(path, pattern)
         else:
             raise ValueError(f"工具尚未接入执行器：{name}")
         return {

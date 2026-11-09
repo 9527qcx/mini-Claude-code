@@ -1,4 +1,4 @@
-READ_ONLY_TOOLS = {"read_file", "list_files"}
+READ_ONLY_TOOLS = {"read_file", "list_files", "grep_search"}
 WRITE_TOOLS = {"write_file", "edit_file", "run_shell"}
 
 #name 工具name, mode 权限模式
