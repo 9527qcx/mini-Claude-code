@@ -2,15 +2,23 @@ from .client import ask_model
 from .tools import execute_tool
 from .permissions import check_permission
 import json
+import sys
+from pathlib import Path
+
+from .session import save_session, load_session
 
 class Agent:
-    def __init__(self, max_turns: int = 10, permission_mode: str ="default"):
+    def __init__(self, max_turns: int = 10, 
+                 permission_mode: str ="default",
+                 session_path: Path | None = None
+                 ):
         if max_turns < 1:
             raise ValueError("max_turns 必须大于 0")
         self.messages = []
         self.max_turns = max_turns
         self.permission_mode = permission_mode
-        self.read_state: dict[str, int] = {}
+        self.read_state: dict[str, int] = {} #对应文件的最后的修改时间
+        self.session_path = session_path
 
     async def chat(self, msg: str) -> str:
         user_message = {"role": "user", "content": msg}
@@ -25,6 +33,7 @@ class Agent:
 
             if not response.tool_calls:
                 self.messages = request_messages
+                self._auto_save()
                 return response.content or ""
 
             for tool_call in response.tool_calls:
@@ -86,10 +95,28 @@ class Agent:
             {"role": "assistant", "content": notice}
         )
         self.messages = request_messages
+        self._auto_save()
+
         return notice
 
-        
+    def _auto_save(self):
+        if self.session_path is None:
+            return
+
+        try:
+            save_session(self.session_path, self.messages)
+        except (OSError, TypeError, ValueError) as error:
+            print(f"警告：会话保存失败：{error}", file=sys.stderr)
+
+    def restore_session(self, path: Path) -> None:
+        messages = load_session(path)
+
+        self.messages = messages
+        self.session_path = Path(path)
+        self.read_state.clear()
 
     def clear_history(self):
         self.messages.clear()
         self.read_state.clear()
+        self._auto_save()
+        

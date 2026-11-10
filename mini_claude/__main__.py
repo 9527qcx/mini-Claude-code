@@ -1,11 +1,12 @@
 import argparse
 import asyncio
-
+from pathlib import Path
 from .agent import Agent
 from openai import APIError
+from uuid import uuid4, UUID
+from .session import find_latest_session
 
-async def run_repl():
-    agent = Agent()
+async def run_repl(agent: Agent):
     print("输入 exit 退出，输入 /clear 清空历史。")
 
     while True:
@@ -42,16 +43,41 @@ def main():
         description="从零学习实现一个 Coding Agent"
     )
     parser.add_argument("prompt", nargs="?", help="你想告诉助手的话")
+    parser.add_argument("--resume",
+                        nargs="?",
+                        const="latest",
+                        default=None,
+                        metavar="SESSION_ID",
+                        help="恢复指定 ID 的会话",
+
+                    )
     args = parser.parse_args()
 
+    session_dir = Path.cwd() / ".mini-claude" / "sessions"
+
     try:
+        if args.resume is None:
+            session_id = uuid4().hex
+        elif args.resume == "latest":
+            latest_path = find_latest_session(session_dir)
+            session_id = latest_path.stem
+        else:
+            session_id = UUID(args.resume).hex
+
+        session_path = session_dir / f"{session_id}.json"
+        agent = Agent(session_path=session_path)
+
+        if args.resume is not None:
+            agent.restore_session(session_path)
+
+        print(f"会话 ID：{session_id}")
         if args.prompt is not None:
-            agent = Agent()
             print(asyncio.run(agent.chat(args.prompt)))
         else:
-            asyncio.run(run_repl())
+            asyncio.run(run_repl(agent))
+
     except ValueError as error:
-        parser.exit(1, f"配置错误：{error}\n")
+        parser.exit(1, f"错误：{error}\n")
     except APIError as error:
         parser.exit(1, f"请求失败：{type(error).__name__}\n")
     except KeyboardInterrupt:
