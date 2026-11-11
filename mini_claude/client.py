@@ -14,7 +14,7 @@ from .prompt import build_system_prompt
 
 
 async def ask_model(
-    messages, *, on_text: Callable[[str], None] | None = None
+    messages, *, on_text: Callable[[str], None] | None = None, on_usage=None,
 ) -> ChatCompletionMessage:
     env_path = Path(__file__).resolve().parent.parent/".env"
     load_dotenv(env_path, encoding="utf-8")
@@ -42,19 +42,25 @@ async def ask_model(
                 messages=request_messages,
                 tools=TOOL_DEFINITIONS,
                 stream=True,
+                stream_options={"include_usage": True},
             )
         stream = await with_retry(create_stream)
-        return await collect_stream(stream, on_text=on_text)
+        return await collect_stream(stream, on_text=on_text, on_usage=on_usage)
 
 async def collect_stream(
-    stream, *, on_text: Callable[[str], None] | None = None
+    stream, *, on_text: Callable[[str], None] | None = None,
+    on_usage=None,
 ) -> ChatCompletionMessage:
     text_parts = []
     tool_calls = {}
     finish_reason = None
+    usage = None
 
     async with stream:
         async for chunk in stream:
+            if chunk.usage is not None:
+                usage = chunk.usage
+
             if not chunk.choices:
                 continue
 
@@ -106,9 +112,12 @@ async def collect_stream(
         if not call["id"] or not call["function"]["name"]:
             raise ValueError("工具调用缺少 ID 或函数名")
 
+    if on_usage is not None:
+        on_usage(usage)
+
     return ChatCompletionMessage(
         role="assistant",
         content="".join(text_parts) or None,
-        tool_calls=assembled_calls or None,
+        tool_calls=assembled_calls or None,     
     )
                 

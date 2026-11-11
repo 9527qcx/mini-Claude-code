@@ -6,11 +6,12 @@ from openai import APIError
 from uuid import uuid4, UUID
 from .session import find_latest_session
 from httpx import RequestError
+from .usage import UsageStats
 
 
 async def show_answer(agent: Agent, message: str) -> None:
     streamed = False
-
+    completed = False
     def on_text(text: str) -> None:
         nonlocal streamed
         if text:
@@ -20,13 +21,49 @@ async def show_answer(agent: Agent, message: str) -> None:
             streamed = True
             print(text, end="", flush=True)
 
-    answer = await agent.chat(message, on_text=on_text)
-    if not streamed:
-        print(answer)
+    try:
+        answer = await agent.chat(message, on_text=on_text)
 
+        if not streamed:
+            print(answer)
+
+        completed = True
+
+    finally:
+        show_usage(agent.turn_usage)
+        if not completed:
+            print("本轮未完成，用量统计可能不完整。")
+
+def show_usage(stats: UsageStats) -> None:
+    calls = stats.reported_requests + stats.missing_requests
+
+    if calls == 0:
+        print("暂无已完成调用的用量记录。")
+        return
+
+    if stats.reported_requests == 0:
+        print(
+            f"本轮用量未知："
+            f"{stats.missing_requests} 次调用未返回统计。"
+        )
+        return
+
+    print(
+        f"本轮已报告用量："
+        f"输入 {stats.prompt_tokens}，"
+        f"输出 {stats.completion_tokens}，"
+        f"合计 {stats.total_tokens} token"
+    )
+    print(
+        f"有统计的调用：{stats.reported_requests}，"
+        f"缺少统计的调用：{stats.missing_requests}"
+    )
+
+    if stats.missing_requests:
+        print("统计不完整，合计仅包含已返回统计的调用。")
 
 def run_repl(agent: Agent):
-    print("输入 exit 退出，输入 /clear 清空历史。")
+    print("输入 exit 退出，/clear 清空历史。")
 
     while True:
         try:

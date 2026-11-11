@@ -122,6 +122,126 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.second.read_bytes(), other_before)
         self.assertEqual(find_latest_session(self.sessions), self.first)
 
+    def test_interrupted_tool_batch_preserves_results_and_can_be_restored(self):
+        tool_request = ChatCompletionMessage(
+            role="assistant", content=None,
+            tool_calls=[{
+                "id": f"call_{index}", "type": "function",
+                "function": {"name": name, "arguments": "{}"},
+            } for index, name in enumerate([
+                "read_file", "write_file", "read_file",
+            ])],
+        )
+        success = {"is_error": False, "content": "first tool completed"}
+
+        for mode in ("confirmation_interrupt", "pending_cancel", "tool_cancel"):
+            with self.subTest(mode=mode):
+                agent = Agent(session_path=self.first)
+                error_type = (
+                    KeyboardInterrupt
+                    if mode == "confirmation_interrupt" else asyncio.CancelledError
+                )
+
+                def confirm(prompt):
+                    if mode == "confirmation_interrupt":
+                        raise KeyboardInterrupt()
+                    if mode == "pending_cancel":
+                        asyncio.current_task().cancel()
+                    return "y"
+
+                async def interrupted_turn():
+                    # Catch inside the task so the test runner itself is not interrupted.
+                    with self.assertRaises(error_type):
+                        await agent.chat("perform three tools")
+                    if mode == "pending_cancel":
+                        self.assertEqual(asyncio.current_task().cancelling(), 1)
+                        asyncio.current_task().uncancel()
+
+                with patch("mini_claude.agent.ask_model", new_callable=AsyncMock) as model, \
+                        patch("mini_claude.agent.execute_tool") as execute, \
+                        patch("builtins.input", side_effect=confirm), \
+                        patch("builtins.print"):
+                    model.return_value = tool_request
+                    execute.side_effect = [success, asyncio.CancelledError()]
+                    asyncio.run(interrupted_turn())
+
+                self.assertEqual(model.await_count, 1)
+                self.assertEqual(execute.call_count, 2 if mode == "tool_cancel" else 1)
+                self.assertEqual(agent.turn_usage.missing_requests, 1)
+                self.assertEqual(
+                    [message["role"] for message in agent.messages],
+                    ["user", "assistant", "tool", "tool", "tool"],
+                )
+                results = agent.messages[2:]
+                self.assertEqual(
+                    [message["tool_call_id"] for message in results],
+                    ["call_0", "call_1", "call_2"],
+                )
+                self.assertEqual(json.loads(results[0]["content"]), success)
+                for message in results[1:]:
+                    result = json.loads(message["content"])
+                    self.assertTrue(result["is_error"])
+                    self.assertIn("中断", result["content"])
+                    self.assertIn("再次执行前请检查实际状态", result["content"])
+
+                # Loading validates that every tool call has exactly one result.
+                saved = load_session(self.first)
+                self.assertEqual(saved, agent.messages)
+                restored = Agent()
+                restored.restore_session(self.first)
+                self.assertEqual(restored.messages, saved)
+
+                final = ChatCompletionMessage(role="assistant", content="Continue safely")
+                with patch("mini_claude.agent.ask_model", new_callable=AsyncMock) as model, \
+                        patch("mini_claude.agent.execute_tool") as execute:
+                    model.return_value = final
+                    self.assertEqual(asyncio.run(restored.chat("continue")), "Continue safely")
+                    execute.assert_not_called()
+                    sent_history = model.call_args.args[0]
+                    self.assertEqual(sent_history[:len(saved)], saved)
+                self.assertEqual(load_session(self.first), restored.messages)
+
+    def test_completed_tool_batch_survives_a_later_model_failure(self):
+        tool_request = ChatCompletionMessage(
+            role="assistant", content=None,
+            tool_calls=[{
+                "id": "call_read", "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        )
+        success = {"is_error": False, "content": "already completed"}
+
+        for error_type in (RuntimeError, asyncio.CancelledError):
+            with self.subTest(error=error_type.__name__):
+                agent = Agent(session_path=self.first)
+                saved_checkpoint = []
+
+                async def model(messages, *, on_usage=None):
+                    if len(messages) == 1:
+                        return tool_request
+                    self.assertIsNot(messages, agent.messages)
+                    self.assertEqual(load_session(self.first), agent.messages)
+                    saved_checkpoint.extend(agent.messages)
+                    # A later, incomplete response must not change the checkpoint.
+                    messages.append({"role": "assistant", "content": "incomplete"})
+                    raise error_type("simulated model failure")
+
+                async def failed_turn():
+                    with self.assertRaises(error_type):
+                        await agent.chat("read a file")
+
+                with patch("mini_claude.agent.ask_model", new=model), \
+                        patch("mini_claude.agent.execute_tool", return_value=success) as execute, \
+                        patch("builtins.print"):
+                    asyncio.run(failed_turn())
+
+                execute.assert_called_once()
+                self.assertEqual(len(saved_checkpoint), 3)
+                self.assertEqual(agent.messages, saved_checkpoint)
+                self.assertEqual(json.loads(agent.messages[-1]["content"]), success)
+                self.assertEqual(load_session(self.first), saved_checkpoint)
+                self.assertEqual(agent.turn_usage.missing_requests, 2)
+
     def test_cli_new_session_does_not_restore(self):
         with patch.object(Path, "cwd", return_value=self.root), \
                 patch.object(cli, "Agent") as factory, \

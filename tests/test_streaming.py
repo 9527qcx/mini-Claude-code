@@ -101,13 +101,58 @@ class StreamingTests(unittest.TestCase):
                         asyncio.run(cli.show_answer(agent, "hello"))
 
                 if fail:
-                    self.assertEqual(output.getvalue(), "助手：Hello\n")
+                    self.assertEqual(
+                        output.getvalue(),
+                        "助手：Hello\n"
+                        "本轮用量未知：1 次调用未返回统计。\n"
+                        "本轮未完成，用量统计可能不完整。\n",
+                    )
                     self.assertEqual(agent.messages, [])
                 else:
-                    self.assertEqual(output.getvalue(), "助手：Hello world\n")
+                    self.assertEqual(
+                        output.getvalue(),
+                        "助手：Hello world\n"
+                        "本轮用量未知：1 次调用未返回统计。\n",
+                    )
                     self.assertEqual(agent.messages[-1]["content"], "Hello world")
+                self.assertEqual(agent.turn_usage.reported_requests, 0)
+                self.assertEqual(agent.turn_usage.missing_requests, 1)
                 self.assertTrue(client.stream.closed)
                 self.assertTrue(client.closed)
+
+    def test_console_reports_usage_from_final_empty_choice_chunk(self):
+        client = FakeClient()
+        client.stream.chunks.append(ChatCompletionChunk(
+            id="completion_test", created=0, model="test",
+            object="chat.completion.chunk", choices=[],
+            usage={
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+            },
+        ))
+        output = io.StringIO()
+        agent = Agent()
+        with patch.object(model_client, "load_dotenv"), \
+                patch.object(model_client, "build_system_prompt", return_value="test"), \
+                patch.object(model_client, "AsyncOpenAI", return_value=client), \
+                patch.dict(os.environ, {
+                    "OPENAI_API_KEY": "test-only",
+                    "OPENAI_API_BASE": "https://example.invalid/v1",
+                    "OPENAI_MODEL": "test",
+                }), redirect_stdout(output):
+            asyncio.run(cli.show_answer(agent, "hello"))
+
+        self.assertEqual(
+            output.getvalue(),
+            "助手：Hello world\n"
+            "本轮已报告用量：输入 100，输出 20，合计 120 token\n"
+            "有统计的调用：1，缺少统计的调用：0\n",
+        )
+        self.assertEqual(agent.turn_usage.total_tokens, 120)
+        self.assertNotIn("usage", agent.messages[-1])
+        self.assertTrue(client.stream.closed)
+        self.assertTrue(client.closed)
 
     def test_tool_logs_and_turn_limit_notice_remain_visible_without_duplicate_text(self):
         tool_request = ChatCompletionMessage(
@@ -122,9 +167,11 @@ class StreamingTests(unittest.TestCase):
             with self.subTest(max_turns=max_turns):
                 responses = iter([tool_request, final])
 
-                async def model(messages, *, on_text):
+                async def model(messages, *, on_text, on_usage=None):
                     response = next(responses)
                     on_text(response.content)
+                    if on_usage is not None:
+                        on_usage(None)
                     return response
 
                 output = io.StringIO()
@@ -137,7 +184,9 @@ class StreamingTests(unittest.TestCase):
                 execute.assert_called_once()
                 prefix = "助手：Reading\n[工具调用] read_file\n[工具结果] 成功\n"
                 ending = agent.messages[-1]["content"] + "\n"
-                self.assertEqual(output.getvalue(), prefix + ending)
+                summary = f"本轮用量未知：{max_turns} 次调用未返回统计。\n"
+                self.assertEqual(output.getvalue(), prefix + ending + summary)
+                self.assertEqual(agent.turn_usage.missing_requests, max_turns)
                 if max_turns == 2:
                     self.assertEqual(ending, "Done\n")
                 else:
@@ -211,8 +260,8 @@ class StreamingTests(unittest.TestCase):
                     chunks.append(chunk(finish_reason=finish_reason))
                 stream = FakeStream(chunks)
 
-                async def model(messages):
-                    return await model_client.collect_stream(stream)
+                async def model(messages, *, on_usage=None):
+                    return await model_client.collect_stream(stream, on_usage=on_usage)
 
                 agent = Agent()
                 previous = [{"role": "user", "content": "previous"}]
