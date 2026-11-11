@@ -31,6 +31,13 @@ async def show_answer(agent: Agent, message: str) -> None:
 
     finally:
         show_usage(agent.turn_usage)
+
+        if agent.context_chars is not None:
+            print(
+                f"最近准备请求的上下文："
+                f"{agent.context_chars} 字符（非 token 数）"
+            )
+
         if not completed:
             print("本轮未完成，用量统计可能不完整。")
 

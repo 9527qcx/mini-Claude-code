@@ -7,15 +7,27 @@ from .tools import TOOL_DEFINITIONS
 from openai.types.chat import ChatCompletionMessage
 from .retry import with_retry
 from .prompt import build_system_prompt
-
+from .context import (
+    measure_context_chars,
+    CONTEXT_TRIM_TRIGGER_CHARS,
+    build_summary_messages,
+)
+from .summarize import summarize_context
 
 
 
 
 
 async def ask_model(
-    messages, *, on_text: Callable[[str], None] | None = None, on_usage=None,
+    messages, *,
+    purpose: str = "chat",
+    on_text: Callable[[str], None] | None = None,
+    on_usage=None,
+    on_context: Callable[[int], None] | None = None,
 ) -> ChatCompletionMessage:
+    if purpose not in ("chat", "summary"):
+        raise ValueError(f"未知请求用途：{purpose}")
+
     env_path = Path(__file__).resolve().parent.parent/".env"
     load_dotenv(env_path, encoding="utf-8")
 
@@ -29,6 +41,19 @@ async def ask_model(
         timeout=60.0,
         max_retries=0,
     ) as client:
+        if purpose == "summary":
+            summary = await summarize_context(
+                messages,
+                client=client,
+                model=os.environ["OPENAI_MODEL"],
+                on_usage=on_usage,
+            )
+
+            return ChatCompletionMessage(
+                role="assistant",
+                content=summary,
+            )
+
         request_messages = [
             {
                 "role": "system",
@@ -36,6 +61,14 @@ async def ask_model(
             },
             *messages
         ]
+        context_chars = measure_context_chars(
+            request_messages,
+            TOOL_DEFINITIONS,
+        )
+
+        if on_context is not None:
+            on_context(context_chars)
+
         async def create_stream():
             return await client.chat.completions.create(
                 model=os.environ["OPENAI_MODEL"],

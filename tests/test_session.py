@@ -78,12 +78,16 @@ class SessionTests(unittest.TestCase):
         agent = Agent()
         agent.restore_session(self.first)
         agent.read_state["sample.txt"] = 123
+        agent.summary_messages = [{"role": "user", "content": "existing summary"}]
+        agent.summary_covered_count = len(self.history)
         self.second.write_text("{broken", encoding="utf-8")
         with self.assertRaises(ValueError):
             agent.restore_session(self.second)
         self.assertEqual(agent.messages, self.history)
         self.assertEqual(agent.session_path, self.first)
         self.assertEqual(agent.read_state, {"sample.txt": 123})
+        self.assertEqual(agent.summary_messages, [{"role": "user", "content": "existing summary"}])
+        self.assertEqual(agent.summary_covered_count, len(self.history))
 
     def test_restored_agent_can_use_tools_and_save_to_original_session(self):
         self.seed_sessions()
@@ -92,8 +96,12 @@ class SessionTests(unittest.TestCase):
         sample.write_text("file marker 42", encoding="utf-8")
         agent = Agent()
         agent.read_state["stale.txt"] = 123
+        agent.summary_messages = [{"role": "user", "content": "summary of another session"}]
+        agent.summary_covered_count = 100
         agent.restore_session(self.first)
         self.assertEqual(agent.read_state, {})
+        self.assertEqual(agent.summary_messages, [])
+        self.assertEqual(agent.summary_covered_count, 0)
 
         tool_request = ChatCompletionMessage(
             role="assistant",
@@ -216,7 +224,7 @@ class SessionTests(unittest.TestCase):
                 agent = Agent(session_path=self.first)
                 saved_checkpoint = []
 
-                async def model(messages, *, on_usage=None):
+                async def model(messages, *, on_usage=None, on_context=None):
                     if len(messages) == 1:
                         return tool_request
                     self.assertIsNot(messages, agent.messages)

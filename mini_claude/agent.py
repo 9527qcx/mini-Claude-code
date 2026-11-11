@@ -1,13 +1,19 @@
 from .client import ask_model
-from .tools import execute_tool
 from .permissions import check_permission
 import json
 import sys
 from pathlib import Path
 from collections.abc import Callable
 import asyncio
-from .session import save_session, load_session
 from .usage import UsageStats
+from .tools import execute_tool, TOOL_DEFINITIONS
+from .session import save_session, load_session, validate_tool_pairs
+from .prompt import build_system_prompt
+from .context import (
+    measure_context_chars,
+    build_summary_messages,
+    CONTEXT_TRIM_TRIGGER_CHARS,
+)
 
 class Agent:
     def __init__(self, max_turns: int = 10,
@@ -22,11 +28,19 @@ class Agent:
         self.read_state: dict[str, int] = {} #对应文件的最后的修改时间
         self.session_path = session_path
         self.turn_usage = UsageStats()
+        self.context_chars:int | None = None #上下文长度
+        self.summary_messages: list = []
+        self.summary_covered_count = 0
 
     async def chat(
         self, msg: str, *, on_text: Callable[[str], None] | None = None
     ) -> str:
         self.turn_usage = UsageStats()
+        self.context_chars = None
+
+        def record_context(chars: int) -> None:
+            self.context_chars = chars
+
         user_message = {"role": "user", "content": msg}
         request_messages = self.messages + [user_message]
 
@@ -49,17 +63,25 @@ class Agent:
                 if on_text is not None:
                     on_text(text)
 
+            await self._maybe_compact_context(
+                request_messages,
+                current_request=msg,
+            )
+            model_messages = self._build_context_messages(request_messages)
+
             try:
                 if on_text is None:
                     response = await ask_model(
-                        request_messages,
+                        model_messages,
                         on_usage=record_usage,
+                        on_context=record_context,
                     )
                 else:
                     response = await ask_model(
-                        request_messages,
+                        model_messages,
                         on_text=emit,
                         on_usage=record_usage,
+                        on_context=record_context,
                     )
             finally:
                 if not usage_received:
@@ -180,6 +202,14 @@ class Agent:
             on_text(notice + "\n")
         return notice
 
+    def _build_context_messages(self, history: list) -> list:
+        covered = self.summary_covered_count
+
+        if not 0 <= covered <= len(history):
+            raise ValueError("摘要覆盖位置与完整历史不一致")
+
+        return self.summary_messages + history[covered:]
+
     def _auto_save(self):
         if self.session_path is None:
             return
@@ -195,9 +225,79 @@ class Agent:
         self.messages = messages
         self.session_path = Path(path)
         self.read_state.clear()
+        self.summary_messages = []
+        self.summary_covered_count = 0
 
     def clear_history(self):
         self.messages.clear()
         self.read_state.clear()
         self._auto_save()
+        self.summary_messages = []
+        self.summary_covered_count = 0
+
+    async def _maybe_compact_context(
+            self,
+            history: list,
+            current_request: str,
+        ) -> None:
+        snapshot = history.copy()
+
+        model_messages = self._build_context_messages(snapshot)
+        system_message = {
+            "role": "system",
+            "content": build_system_prompt(),
+        }
+
+        before_chars = measure_context_chars(
+            [system_message, *model_messages],
+            TOOL_DEFINITIONS,
+        )
+        self.context_chars = before_chars
+
+        if before_chars <= CONTEXT_TRIM_TRIGGER_CHARS:
+            return
+
+        validate_tool_pairs(snapshot)
+        print("[上下文] 正在生成摘要……")
+
+        response = await ask_model(
+            model_messages,
+            purpose="summary",
+            on_usage=self.turn_usage.record,
+        )
+
+        candidate = build_summary_messages(
+            response.content or "",
+            current_request,
+        )
+
+        after_chars = measure_context_chars(
+            [system_message, *candidate],
+            TOOL_DEFINITIONS,
+        )
+
+        if after_chars >= before_chars:
+            raise ValueError("摘要没有缩短上下文，保留原始历史")
+
+        if after_chars > CONTEXT_TRIM_TRIGGER_CHARS:
+            raise ValueError(
+                "摘要后的上下文仍超过设定阈值，"
+                "请调整阈值或缩小本次输入"
+            )
+
+        # 所有检查通过后，再提交状态。
+        # 先保留完整历史，保证覆盖位置有对应的原始消息。
+        self.messages = snapshot
+        self._auto_save()
+
+        self.summary_messages = candidate
+        self.summary_covered_count = len(snapshot)
+        self.context_chars = after_chars
+
+        print(
+            f"[上下文] 已压缩："
+            f"{before_chars} → {after_chars} 字符"
+        )
+
         
+
