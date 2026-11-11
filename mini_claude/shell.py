@@ -2,7 +2,8 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-
+import asyncio
+import time
 
 def _stop_process_tree(process: subprocess.Popen) -> str:
     note = ""
@@ -12,6 +13,7 @@ def _stop_process_tree(process: subprocess.Popen) -> str:
             ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            check=False,
             timeout=5,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
@@ -28,6 +30,30 @@ def _stop_process_tree(process: subprocess.Popen) -> str:
 
     return note
 
+def _wait_process(process: subprocess.Popen, timeout: int) -> None:
+    deadline = time.monotonic() + timeout
+
+    try:
+        task = asyncio.current_task()#主任务，也就是python代码
+    except RuntimeError:
+        task = None
+
+    while True:
+        if task is not None and task.cancelling():
+            raise asyncio.CancelledError()
+
+        if process.poll() is not None:
+            return
+
+        remaining = deadline - time.monotonic()
+
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+
+        try:
+            process.wait(timeout=min(0.1, remaining))
+        except subprocess.TimeoutExpired:
+            pass
 
 def run_shell(command: str, timeout: int = 30) -> dict:
     if os.name != "nt":
@@ -77,7 +103,7 @@ def run_shell(command: str, timeout: int = 30) -> dict:
         )
 
         try:
-            process.wait(timeout=timeout)
+            _wait_process(process, timeout)
 
         except subprocess.TimeoutExpired:
             timed_out = True

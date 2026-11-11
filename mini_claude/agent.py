@@ -4,7 +4,8 @@ from .permissions import check_permission
 import json
 import sys
 from pathlib import Path
-
+from collections.abc import Callable
+import asyncio
 from .session import save_session, load_session
 
 class Agent:
@@ -20,12 +21,29 @@ class Agent:
         self.read_state: dict[str, int] = {} #对应文件的最后的修改时间
         self.session_path = session_path
 
-    async def chat(self, msg: str) -> str:
+    async def chat(
+        self, msg: str, *, on_text: Callable[[str], None] | None = None
+    ) -> str:
         user_message = {"role": "user", "content": msg}
         request_messages = self.messages + [user_message]
 
         for _ in range(self.max_turns):
-            response = await ask_model(request_messages)
+            if on_text is None:
+                response = await ask_model(request_messages)
+            else:
+                last_part = ""
+
+                def emit(text: str) -> None:
+                    nonlocal last_part
+                    last_part = text
+                    on_text(text)
+
+                try:
+                    response = await ask_model(request_messages, on_text=emit)
+                finally:
+                    # 在工具日志、下一轮文本或错误提示前结束当前输出行。
+                    if last_part and not last_part.endswith("\n"):
+                        on_text("\n")
 
             request_messages.append(
                 response.model_dump(exclude_none=True)
@@ -37,6 +55,8 @@ class Agent:
                 return response.content or ""
 
             for tool_call in response.tool_calls:
+                await asyncio.sleep(0)
+
                 name = tool_call.function.name
                 print(f"[工具调用] {name}")
 
@@ -97,6 +117,8 @@ class Agent:
         self.messages = request_messages
         self._auto_save()
 
+        if on_text is not None:
+            on_text(notice + "\n")
         return notice
 
     def _auto_save(self):

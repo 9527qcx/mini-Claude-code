@@ -4,7 +4,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 from openai.types.chat import ChatCompletionMessage
 
@@ -130,7 +130,7 @@ class SessionTests(unittest.TestCase):
             factory.return_value.chat = AsyncMock(return_value="ok")
             cli.main()
             factory.return_value.restore_session.assert_not_called()
-            factory.return_value.chat.assert_awaited_once_with("hello")
+            factory.return_value.chat.assert_awaited_once_with("hello", on_text=ANY)
             path = factory.call_args.kwargs["session_path"]
             self.assertEqual(path.parent, self.sessions)
             self.assertEqual(len(path.stem), 32)
@@ -145,7 +145,7 @@ class SessionTests(unittest.TestCase):
                 factory.return_value.chat = AsyncMock(return_value="ok")
                 cli.main()
                 factory.return_value.restore_session.assert_called_once_with(self.first)
-                factory.return_value.chat.assert_awaited_once_with("hello")
+                factory.return_value.chat.assert_awaited_once_with("hello", on_text=ANY)
 
     def test_cli_latest_supports_interactive_and_single_prompt(self):
         self.seed_sessions()
@@ -157,18 +157,18 @@ class SessionTests(unittest.TestCase):
             with self.subTest(arguments=arguments), \
                     patch.object(Path, "cwd", return_value=self.root), \
                     patch.object(cli, "Agent") as factory, \
-                    patch.object(cli, "run_repl", new_callable=AsyncMock) as repl, \
+                    patch.object(cli, "run_repl") as repl, \
                     patch("sys.argv", ["mini_claude", *arguments]), \
                     patch("builtins.print"):
                 factory.return_value.chat = AsyncMock(return_value="ok")
                 cli.main()
                 factory.return_value.restore_session.assert_called_once_with(self.first)
                 if prompt is None:
-                    repl.assert_awaited_once_with(factory.return_value)
+                    repl.assert_called_once_with(factory.return_value)
                     factory.return_value.chat.assert_not_awaited()
                 else:
-                    factory.return_value.chat.assert_awaited_once_with(prompt)
-                    repl.assert_not_awaited()
+                    factory.return_value.chat.assert_awaited_once_with(prompt, on_text=ANY)
+                    repl.assert_not_called()
 
 
 if __name__ == "__main__":

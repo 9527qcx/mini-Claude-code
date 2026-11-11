@@ -5,8 +5,27 @@ from .agent import Agent
 from openai import APIError
 from uuid import uuid4, UUID
 from .session import find_latest_session
+from httpx import RequestError
 
-async def run_repl(agent: Agent):
+
+async def show_answer(agent: Agent, message: str) -> None:
+    streamed = False
+
+    def on_text(text: str) -> None:
+        nonlocal streamed
+        if text:
+            if not streamed:
+                print("助手：", end="", flush=True)
+
+            streamed = True
+            print(text, end="", flush=True)
+
+    answer = await agent.chat(message, on_text=on_text)
+    if not streamed:
+        print(answer)
+
+
+def run_repl(agent: Agent):
     print("输入 exit 退出，输入 /clear 清空历史。")
 
     while True:
@@ -28,15 +47,21 @@ async def run_repl(agent: Agent):
             continue
 
         try:
-            answer = await agent.chat(msg)
+            asyncio.run(show_answer(agent=agent, message=msg))
+        except KeyboardInterrupt:
+            print("\n本轮已中断，可以继续输入。")
+            continue
         except ValueError as error:
             print(f"配置错误：{error}")
             continue
         except APIError as error:
             print(f"请求失败：{type(error).__name__}")
             continue
-
-        print(f"助手：{answer}")
+        except RequestError as error:
+            print(
+                f"接收响应失败：{type(error).__name__}，本轮已停止。"
+            )
+            continue
 
 def main():
     parser = argparse.ArgumentParser(
@@ -72,9 +97,9 @@ def main():
 
         print(f"会话 ID：{session_id}")
         if args.prompt is not None:
-            print(asyncio.run(agent.chat(args.prompt)))
+            asyncio.run(show_answer(agent, args.prompt))
         else:
-            asyncio.run(run_repl(agent))
+            run_repl(agent)
 
     except ValueError as error:
         parser.exit(1, f"错误：{error}\n")
@@ -82,6 +107,11 @@ def main():
         parser.exit(1, f"请求失败：{type(error).__name__}\n")
     except KeyboardInterrupt:
         print("\n已退出。")
+    except RequestError as error:
+        parser.exit(
+            1,
+            f"接收响应失败：{type(error).__name__}，本轮已停止。\n",
+        )
 
 
 if __name__ == "__main__":
