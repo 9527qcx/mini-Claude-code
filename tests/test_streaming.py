@@ -176,7 +176,7 @@ class StreamingTests(unittest.TestCase):
             with self.subTest(max_turns=max_turns):
                 responses = iter([tool_request, final])
 
-                async def model(messages, *, on_text, on_usage=None, on_context=None):
+                async def model(messages, *, on_text, on_usage=None, on_context=None, memory_candidates=None):
                     response = next(responses)
                     on_context(1000 if response.tool_calls else 2000)
                     on_text(response.content)
@@ -264,7 +264,7 @@ class StreamingTests(unittest.TestCase):
                 agent = Agent()
                 calls = 0
 
-                async def model(messages, *, on_text=None, on_usage=None, on_context=None):
+                async def model(messages, *, on_text=None, on_usage=None, on_context=None, memory_candidates=None):
                     nonlocal calls
                     calls += 1
                     if calls == 2:
@@ -291,7 +291,7 @@ class StreamingTests(unittest.TestCase):
     def test_context_resets_if_next_preflight_fails_before_measurement(self):
         agent = Agent()
 
-        async def model(messages, *, on_text=None, on_usage=None, on_context=None):
+        async def model(messages, *, on_text=None, on_usage=None, on_context=None, memory_candidates=None):
             on_context(4321)
             return ChatCompletionMessage(role="assistant", content="Done")
 
@@ -420,7 +420,7 @@ class StreamingTests(unittest.TestCase):
                     chunks.append(chunk(finish_reason=finish_reason))
                 stream = FakeStream(chunks)
 
-                async def model(messages, *, on_usage=None, on_context=None):
+                async def model(messages, *, on_usage=None, on_context=None, memory_candidates=None):
                     return await model_client.collect_stream(stream, on_usage=on_usage)
 
                 agent = Agent()

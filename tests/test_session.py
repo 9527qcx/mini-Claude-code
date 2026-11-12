@@ -224,7 +224,7 @@ class SessionTests(unittest.TestCase):
                 agent = Agent(session_path=self.first)
                 saved_checkpoint = []
 
-                async def model(messages, *, on_usage=None, on_context=None):
+                async def model(messages, *, on_usage=None, on_context=None, memory_candidates=None):
                     if len(messages) == 1:
                         return tool_request
                     self.assertIsNot(messages, agent.messages)

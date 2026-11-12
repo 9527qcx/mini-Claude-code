@@ -134,7 +134,7 @@ def main():
             session_id = UUID(args.resume).hex
 
         session_path = session_dir / f"{session_id}.json"
-        agent = Agent(session_path=session_path)
+        agent = Agent(session_path=session_path, enable_memory_recall=True,)
 
         if args.resume is not None:
             agent.restore_session(session_path)

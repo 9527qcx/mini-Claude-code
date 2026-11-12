@@ -2,6 +2,8 @@ from .client import ask_model
 from .permissions import check_permission
 import json
 import sys
+from openai import APIError
+from httpx import RequestError
 from pathlib import Path
 from collections.abc import Callable
 import asyncio
@@ -14,11 +16,17 @@ from .context import (
     build_summary_messages,
     CONTEXT_TRIM_TRIGGER_CHARS,
 )
+from .recall import (
+    select_relevant_memories,
+    build_recalled_memory_message,
+)
+from .memory import list_memories
 
 class Agent:
     def __init__(self, max_turns: int = 10,
                  permission_mode: str ="default",
-                 session_path: Path | None = None
+                 session_path: Path | None = None,
+                 enable_memory_recall: bool = False,
                  ):
         if max_turns < 1:
             raise ValueError("max_turns 必须大于 0")
@@ -31,18 +39,47 @@ class Agent:
         self.context_chars:int | None = None #上下文长度
         self.summary_messages: list = []
         self.summary_covered_count = 0
+        self.enable_memory_recall = enable_memory_recall
+        self.memory_directory = (
+            Path.cwd() / ".mini-claude" / "memory"
+        ).resolve()
+
+        try:
+            self.memory_candidates = list_memories(
+                self.memory_directory
+            )
+        except (OSError, ValueError) as error:
+            print(
+                f"警告：无法加载启动记忆索引（{type(error).__name__}），"
+                "本次会话使用空索引。",
+                file=sys.stderr,
+            )
+            self.memory_candidates = []
 
     async def chat(
         self, msg: str, *, on_text: Callable[[str], None] | None = None
     ) -> str:
         self.turn_usage = UsageStats()
         self.context_chars = None
+        memory_message = None
 
+        if self.enable_memory_recall:
+            memory_message = await self._recall_memory(msg)
+
+        request_messages = self.messages.copy()
+
+        if memory_message is not None:
+            request_messages.append(memory_message)
+
+        user_message = {
+            "role": "user",
+            "content": msg,
+        }
+        request_messages.append(user_message)
+        
         def record_context(chars: int) -> None:
             self.context_chars = chars
 
-        user_message = {"role": "user", "content": msg}
-        request_messages = self.messages + [user_message]
 
         for _ in range(self.max_turns):
             usage_received = False
@@ -75,6 +112,7 @@ class Agent:
                         model_messages,
                         on_usage=record_usage,
                         on_context=record_context,
+                        memory_candidates=self.memory_candidates,
                     )
                 else:
                     response = await ask_model(
@@ -82,6 +120,7 @@ class Agent:
                         on_text=emit,
                         on_usage=record_usage,
                         on_context=record_context,
+                        memory_candidates=self.memory_candidates,
                     )
             finally:
                 if not usage_received:
@@ -245,7 +284,7 @@ class Agent:
         model_messages = self._build_context_messages(snapshot)
         system_message = {
             "role": "system",
-            "content": build_system_prompt(),
+            "content": build_system_prompt(memory_candidates=self.memory_candidates),
         }
 
         before_chars = measure_context_chars(
@@ -299,5 +338,34 @@ class Agent:
             f"{before_chars} → {after_chars} 字符"
         )
 
-        
+    async def _recall_memory(
+        self,
+        query: str,
+    ) -> dict[str, str] | None:
+        try:
+            memories = await asyncio.wait_for(
+                select_relevant_memories(
+                    query,
+                    self.memory_directory,
+                    candidates=self.memory_candidates,
+                    on_usage=self.turn_usage.record,
+                ),
+                timeout=15,
+            )
+
+            return build_recalled_memory_message(memories)
+
+        except (
+            TimeoutError,
+            APIError,
+            RequestError,
+            OSError,
+            ValueError,
+        ) as error:
+            print(
+                f"警告：记忆召回失败（{type(error).__name__}），"
+                "继续处理当前请求。",
+                file=sys.stderr,
+            )
+            return None 
 

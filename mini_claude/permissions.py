@@ -1,5 +1,5 @@
 READ_ONLY_TOOLS = {"read_file", "list_files", "grep_search"}
-WRITE_TOOLS = {"write_file", "edit_file", "run_shell"}
+WRITE_TOOLS = {"write_file", "edit_file", "run_shell", "save_memory"}
 
 #name 工具name, mode 权限模式
 def check_permission(name: str, mode: str = "default") -> dict:

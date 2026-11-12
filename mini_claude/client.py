@@ -13,6 +13,7 @@ from .context import (
     build_summary_messages,
 )
 from .summarize import summarize_context
+from .memory import MEMORY_SELECTION_PROMPT
 
 
 
@@ -24,8 +25,9 @@ async def ask_model(
     on_text: Callable[[str], None] | None = None,
     on_usage=None,
     on_context: Callable[[int], None] | None = None,
+    memory_candidates: list[dict[str, str]] | None = None,
 ) -> ChatCompletionMessage:
-    if purpose not in ("chat", "summary"):
+    if purpose not in ("chat", "summary", "memory_select"):
         raise ValueError(f"未知请求用途：{purpose}")
 
     env_path = Path(__file__).resolve().parent.parent/".env"
@@ -54,10 +56,52 @@ async def ask_model(
                 content=summary,
             )
 
+        if purpose == "memory_select":
+            selection_messages = [
+                {
+                    "role": "system",
+                    "content": MEMORY_SELECTION_PROMPT,
+                },
+                *messages,
+            ]
+
+            async def create_selection():
+                return await client.chat.completions.create(
+                    model=os.environ["OPENAI_MODEL"],
+                    messages=selection_messages,
+                    stream=False,
+                    max_tokens=1024,
+                )
+
+            usage = None
+
+            try:
+                response = await with_retry(create_selection)
+                usage = response.usage
+            finally:
+                if on_usage is not None:
+                    on_usage(usage)
+            if not response.choices:
+                raise ValueError("记忆选择响应没有候选结果")
+
+            choice = response.choices[0]
+            message = choice.message
+
+            if choice.finish_reason != "stop":
+                raise ValueError("记忆选择响应未正常完成")
+
+            if message.tool_calls:
+                raise ValueError("记忆选择请求不允许调用工具")
+
+            if not message.content or not message.content.strip():
+                raise ValueError("记忆选择结果为空")
+
+            return message
+
         request_messages = [
             {
                 "role": "system",
-                "content": build_system_prompt(),
+                "content": build_system_prompt(memory_candidates=memory_candidates),
             },
             *messages
         ]

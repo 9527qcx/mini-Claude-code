@@ -1,9 +1,9 @@
 from pathlib import Path
 import subprocess
-
+from .memory import save_memory
 from .shell import run_shell
 
-TOOLS_NAME = ["read_file", "list_files", "write_file", "edit_file", "grep_search", "run_shell"]
+TOOLS_NAME = ["read_file", "list_files", "write_file", "edit_file", "grep_search", "run_shell", "save_memory"]
 
 TOOL_DEFINITIONS = [
     {
@@ -142,6 +142,32 @@ TOOL_DEFINITIONS = [
         },
     },
 },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_memory",
+            "description": (
+                "用户明确要求长期记住某项偏好、纠正或约束时，"
+                "保存一条跨会话记忆。"
+                "不保存临时执行日志。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "简洁明确的记忆标题",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "需要长期保留的准确内容",
+                    },
+                },
+                "required": ["title", "content"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 def _read_file(file_path: str, read_state: dict[str, int] | None = None) -> str:
@@ -307,6 +333,26 @@ def execute_tool(name: str,
         return {
             "is_error": True,
             "content": "工具参数必须是字典",
+        }
+
+    if name == "save_memory":
+        directory = Path.cwd() / ".mini-claude" / "memory"
+
+        try:
+            memory_id = save_memory(
+                directory,
+                title=arguments.get("title"),
+                content=arguments.get("content"),
+            )
+        except (OSError, UnicodeError, ValueError) as error:
+            return {
+                "is_error": True,
+                "content": f"保存记忆失败：{error}",
+            }
+
+        return {
+            "is_error": False,
+            "content": f"记忆已保存，ID：{memory_id}",
         }
 
     if name == "run_shell":

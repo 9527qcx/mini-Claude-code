@@ -185,7 +185,7 @@ class CompactionTests(unittest.IsolatedAsyncioTestCase):
                 agent.messages = copy.deepcopy(self.previous)
                 calls = []
 
-                async def model(messages, *, purpose="chat", on_usage=None, on_context=None, on_text=None):
+                async def model(messages, *, purpose="chat", on_usage=None, on_context=None, on_text=None, memory_candidates=None):
                     calls.append((purpose, copy.deepcopy(messages)))
                     if purpose == "summary":
                         on_usage(self.summary_usage)
@@ -221,7 +221,7 @@ class CompactionTests(unittest.IsolatedAsyncioTestCase):
         purposes = []
         normal_requests = 0
 
-        async def model(messages, *, purpose="chat", on_usage=None, on_context=None):
+        async def model(messages, *, purpose="chat", on_usage=None, on_context=None, memory_candidates=None):
             nonlocal normal_requests
             purposes.append(purpose)
             if purpose == "summary":
@@ -257,7 +257,7 @@ class CompactionTests(unittest.IsolatedAsyncioTestCase):
     async def test_answer_failure_after_compaction_keeps_coverage_consistent(self):
         purposes = []
 
-        async def model(messages, *, purpose="chat", on_usage=None, on_context=None):
+        async def model(messages, *, purpose="chat", on_usage=None, on_context=None, memory_candidates=None):
             purposes.append(purpose)
             if purpose == "summary":
                 on_usage(self.summary_usage)
